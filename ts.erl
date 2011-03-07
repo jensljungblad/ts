@@ -7,9 +7,10 @@ new() ->
 
 % retrieve tuple matching pattern from tuplespace
 in(TS, Pattern) ->
-    TS ! {self(), Pattern},
+    Ref = make_ref(),
+    TS ! {self(), Ref, Pattern},
     receive
-        Result ->
+        {Ref, Result} ->
             Result
     end.
     
@@ -22,24 +23,39 @@ ts() -> ts([], []).
 ts(Tuples, WaitingList) ->
     receive 
         % handle in messages
-        {From, Pattern} ->
+        {From, Ref, Pattern} ->
             case recursive_match(Pattern, Tuples, []) of
                 {FoundTuple, NewTuples} -> 
-                    From ! FoundTuple,
+                    From ! {Ref, FoundTuple},
                     ts(NewTuples, WaitingList);
                 false -> 
-                    ts(Tuples, [{From, Pattern}|WaitingList])
+                    ts(Tuples, [{From, Ref, Pattern}|WaitingList])
             end;
         % handle out messages
         {Tuple} ->
-            case recursive_match({any, Tuple}, WaitingList, []) of
-                {{From, _}, NewWaitingList} ->
-                    From ! Tuple,
-                    ts(Tuples, NewWaitingList);
-                false -> ts([Tuple|Tuples], WaitingList)
+            case match_list(Tuple, WaitingList, []) of
+                false -> ts([Tuple|Tuples], WaitingList);
+                {Waiting, List}  ->
+                    {From, Ref, _} = Waiting,
+                    From ! {Ref, Tuple},
+                    ts(Tuples, List)
             end
     end. 
-    
+
+% match tuple against waiting list.
+% returns false if no match is found, else a tuple with the
+% information about the waiting process and the new list.
+match_list(_, [], _) ->
+    false;
+match_list(Tuple, [Head|Tail], NewList) ->
+    {_, _, Pattern} = Head,
+    case match(Pattern, Tuple) of
+        true ->
+            {Head, NewList ++ Tail};
+        false ->
+            match_list(Tuple, Tail, [Head | NewList])
+    end.
+
 % recursive matching returns matched tuple and new tuples list
 recursive_match(_, [], _)->
     false;
@@ -52,7 +68,6 @@ recursive_match(Pattern, Tuples, NewTuples) ->
     
 % match pattern with tuple
 match(any,_) -> true;
-match(_,any) -> true;
 match(P,Q) when is_tuple(P), is_tuple(Q) -> 
     match(tuple_to_list(P),tuple_to_list(Q));
 match([P|PS],[L|LS]) -> 
